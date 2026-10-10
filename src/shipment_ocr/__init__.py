@@ -1,0 +1,2 @@
+"""Shipment proof OCR service."""
+
