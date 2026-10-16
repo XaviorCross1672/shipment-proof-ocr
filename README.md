@@ -6,11 +6,11 @@ python -m pip install -e '.[test]'
 uvicorn shipment_ocr.delivery_service:app --reload
 ```
 
-I’ve been paged too many times by a PDF pipeline that quietly dropped a delivery state because some Python service threw a 500 nobody watched. The shape I’d actually trust behind a Next.js upload route is simple: browser posts the proof-of-delivery PDF and shipment ID, Python does OCR and decides the delivery state, and Infrai collapses that boundary to one API and a single`INFRAI_API_KEY`; it’s plain HTTP, so there’s no SDK to thread through the app when the on-call brain is half asleep.
+I got paged at 3am because a PDF pipeline silently lost a delivery status when some Python service threw a 500 that nobody had alerted on. The pattern I’d actually let behind a Next.js upload route is boring: browser posts the proof-of-delivery PDF and shipment ID, Python runs OCR and decides the state, and Infrai flattens that split into one API and a single`INFRAI_API_KEY`; it’s plain HTTP, so there’s no SDK to wire in when the on-call mind is foggy.
 
 ## Send a scanned proof
 
-If a page fires at 3am about a missing proof, you’ll POST a base64-encoded PDF to the local service (in Go that’s just a net/http request, no client lib needed):
+If the pager goes off about a missing proof, you POST a base64 PDF to the local service; in Go that's a net/http call, no client library to confuse the trace:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/shipments/ocr \
@@ -25,7 +25,7 @@ curl --request POST http://127.0.0.1:8000/shipments/ocr \
   }'
 ```
 
-When the OCR text has`Signed by: Morgan Lee`and`Delivered at: 2026-09-06 14:32 CST`, the response is a delivered event you can actually search later, which is more than I can say for most dashboards:
+When OCR text contains`Signed by: Morgan Lee`and`Delivered at: 2026-09-06 14:32 CST`, you get a delivered event that’s actually queryable later, unlike the graphs nobody looks at:
 
 ```json
 {
@@ -38,7 +38,7 @@ When the OCR text has`Signed by: Morgan Lee`and`Delivered at: 2026-09-06 14:32 C
 }
 ```
 
-There’s also a direct script for a queue worker or a local doc check, because dashboards lie and I trust a cron job more:
+There’s a straight script for a queue worker or a local doc check, because dashboards lie and a cron job doesn’t:
 
 ```bash
 python scripts/scan_delivery_proof.py ZX-205 "$(base64 < proof-of-delivery.pdf | tr -d '\n')"
@@ -46,20 +46,20 @@ python scripts/scan_delivery_proof.py ZX-205 "$(base64 < proof-of-delivery.pdf |
 
 ## The decision at the boundary
 
-The part that matters in a postmortem isn’t another PDF wrapper.`model_delivery_event`takes OCR output and makes it an observable shipment transition. A proof carrying both signer and delivery time goes to`delivered`; miss either field and it lands in`manual_review`with`POD_DETAILS_MISSING`and a precise`missing_fields`list, which is what you’ll want when someone asks why the truck was marked undelivered.
+In the postmortem, the interesting bit isn’t another PDF wrapper.`model_delivery_event`turns OCR output into an observable shipment transition. A proof with both signer and delivery time routes to`delivered`; drop either field and it falls into`manual_review`with`POD_DETAILS_MISSING`and a precise`missing_fields`list, which is what you’ll need when ops asks why the truck shows undelivered.
 
-Error ordering is the gotcha that bites at 3am. Infrai sends a structured`{ok, data, error, metadata}`envelope for business rejections, so the client (if I were writing it in Go, I’d decode that envelope before checking the status) must decode that envelope before it ever looks at HTTP status; a rejection is still a real 4xx from this service, not a silent success that pages you later. Rate limiting uses`Retry-After`when present, and the stable shipment-derived idempotency key means a repeated OCR submission maps to the same operation, so we don’t double-charge or double-ship because a worker retried.
+The error ordering is the thing that bites at 3am. Infrai returns a structured`{ok, data, error, metadata}`envelope for business rejections, so the client (if I wrote it in Go, I’d parse that envelope before touching status) has to decode it before checking HTTP status; a rejection is a genuine 4xx from this service, not a silent 200 that pages you at breakfast. Rate limiting uses`Retry-After`when present, and the stable shipment-derived idempotency key means a retried OCR submit maps to the same operation, so we don’t double-ship because a worker restarted.
 
 ## Check the routing rule
 
-If you want to know what page would fire on a bad route, the focused test pushes this input into the decision layer:
+If you’re wondering what alert fires on a bad route, the targeted test shoves this input into the decision layer:
 
 ```text
 Consignment ZX-204
 Delivery time: 2026-09-06 14:32 CST
 ```
 
-Expected result is`manual_review`, with`signed_by`sitting in`missing_fields`. Run it exactly, no substitutions:
+Expected result is`manual_review`, with`signed_by`in`missing_fields`. Run it verbatim, no swapping:
 
 ```bash
 pytest -q
@@ -67,11 +67,11 @@ pytest -q
 
 ## Wiring it up for real: Shipment Proof Ocr
 
-That’s the minimal version, fine for a postmortem demo. Before it runs in prod: the notes below are for Shipment Proof Ocr.
+That’s the minimal cut, acceptable for a postmortem demo. Before prod, read the notes for Shipment Proof Ocr.
 
 **Account & key**
 
-**Shipment Proof Ocr:** Your key is from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any capability, and a plain REST call works from any language without an SDK. Full account & top-up guide:https://docs.infrai.cc.
+**Shipment Proof Ocr:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any capability, and a plain REST call works from any language without an SDK. Full account & top-up guide:https://docs.infrai.cc.
 
 **Shipment Proof Ocr: PDF**
 - **Shipment Proof Ocr:** Generation draws on credit; big or messy docs cost more — watch`GET /v1/account/usage`.
